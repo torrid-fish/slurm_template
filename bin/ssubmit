@@ -257,11 +257,22 @@ def run():
         "--nodes=1",
         "--ntasks=1",
         "--cpus-per-task=4",
+        "--partition=p01",
+        "--time=0-05:00:00",
+        "--gres=gpu:h100:1",
         f"--job-name={full_id}",
         f"--output={log_file}",
     ]
     # Override with user args
     sbatch_args.extend(options.to_sbatch_args())
+
+    # --- Debug: Print SLURM Settings ---
+    print("-" * 60)
+    print(f"SLURM Configuration for Job: {full_id}")
+    for arg in sbatch_args:
+        print(f"  {arg}")
+    print(f"  Command: {command}")
+    print("-" * 60)
 
     # 6. Submit
     script_content = f"""#!/bin/bash
