@@ -257,10 +257,6 @@ def run():
     final_options = SbatchOptions(
         nodes=1,
         ntasks=1,
-        cpus_per_task=4,
-        partition="p01",
-        time="0-05:00:00",
-        gres="gpu:h100:1",
         job_name=full_id,
         output=log_file,
     )
