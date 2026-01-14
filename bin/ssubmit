@@ -1,191 +1,305 @@
-#!/bin/bash
-# Usage: ssubmit [OPTIONS] [SLURM_OPTIONS] '<command_or_script>'
-
-# Get the directory where this script is located
-SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
-export SCRIPT_DIR
-
-# Parse arguments using Python parser
-{
-    read -r AUTO_CLEANUP
-    read -r SBATCH_ARGS_JSON
-    read -r SCRIPT
-} < <(python3 - "$@" << 'PYTHON_PARSER'
+#!/usr/bin/env python3
 import sys
-import json
 import os
+import re
+import json
 import shlex
-sys.path.insert(0, os.environ.get('SCRIPT_DIR', ''))
-from sbatch_parser import SbatchParser
+import subprocess
+from dataclasses import dataclass, asdict, field
+from datetime import datetime
+from typing import Dict, List, Optional, Any, Tuple
 
-# Parse command line arguments
-parser = SbatchParser()
+# --- SLURM Parser Logic ---
 
-# Separate ssubmit-specific options from SLURM options
-remaining_args = []
-auto_cleanup = False
 
-for arg in sys.argv[1:]:
-    if arg == "--cleanup":
-        auto_cleanup = True
-    else:
-        remaining_args.append(arg)
+@dataclass
+class SbatchOptions:
+    """Parsed SLURM sbatch options."""
 
-# Now parse SLURM options from remaining args
-if remaining_args:
-    options, command_args = parser.parse(remaining_args)
-    
+    nodes: Optional[int] = None
+    ntasks: Optional[int] = None
+    cpus_per_task: Optional[int] = None
+    gres: Optional[str] = None
+    time: Optional[str] = None
+    partition: Optional[str] = None
+    job_name: Optional[str] = None
+    output: Optional[str] = None
+    error: Optional[str] = None
+    mem: Optional[str] = None
+    mem_per_cpu: Optional[str] = None
+    mail_type: Optional[str] = None
+    mail_user: Optional[str] = None
+    dependency: Optional[str] = None
+    array: Optional[str] = None
+    exclusive: Optional[str] = None
+    constraint: Optional[str] = None
+    account: Optional[str] = None
+    extra_options: Dict[str, Any] = field(default_factory=dict)
+
+    def to_sbatch_args(self) -> List[str]:
+        mapping = {
+            "nodes": ("--nodes", "="),
+            "ntasks": ("--ntasks", "="),
+            "cpus_per_task": ("--cpus-per-task", "="),
+            "gres": ("--gres", "="),
+            "time": ("--time", "="),
+            "partition": ("--partition", "="),
+            "job_name": ("--job-name", "="),
+            "output": ("--output", "="),
+            "error": ("--error", "="),
+            "mem": ("--mem", "="),
+            "mem_per_cpu": ("--mem-per-cpu", "="),
+            "mail_type": ("--mail-type", "="),
+            "mail_user": ("--mail-user", "="),
+            "dependency": ("--dependency", "="),
+            "array": ("--array", "="),
+            "exclusive": ("--exclusive", "="),
+            "constraint": ("--constraint", "="),
+            "account": ("--account", "="),
+        }
+        args = []
+        for attr, (flag, sep) in mapping.items():
+            val = getattr(self, attr)
+            if val is not None:
+                args.append(f"{flag}{sep}{val}")
+        for key, val in self.extra_options.items():
+            if val is True:
+                args.append(f"--{key}")
+            elif val is not False:
+                args.append(f"--{key}={val}")
+        return args
+
+
+class SbatchParser:
+    OPTION_ALIASES = {
+        "-N": "nodes",
+        "--nodes": "nodes",
+        "-n": "ntasks",
+        "--ntasks": "ntasks",
+        "-c": "cpus_per_task",
+        "--cpus-per-task": "cpus_per_task",
+        "--gres": "gres",
+        "--time": "time",
+        "-p": "partition",
+        "--partition": "partition",
+        "-J": "job_name",
+        "--job-name": "job_name",
+        "-o": "output",
+        "--output": "output",
+        "-e": "error",
+        "--error": "error",
+        "--mem": "mem",
+        "--mem-per-cpu": "mem_per_cpu",
+        "--mail-type": "mail_type",
+        "--mail-user": "mail_user",
+        "--dependency": "dependency",
+        "--array": "array",
+        "--exclusive": "exclusive",
+        "--constraint": "constraint",
+        "-A": "account",
+        "--account": "account",
+    }
+
+    def __init__(self):
+        self.options = SbatchOptions()
+        self.errors = []
+
+    def parse(self, args: List[str]) -> Tuple[SbatchOptions, List[str]]:
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if not arg.startswith("-"):
+                return self.options, args[i:]
+            if arg == "--":
+                return self.options, args[i + 1 :]
+            if arg in ("-h", "--help"):
+                self._print_help()
+                sys.exit(0)
+            i = self._parse_one(arg, args, i)
+        return self.options, []
+
+    def _parse_one(self, arg: str, args: List[str], index: int) -> int:
+        if "=" in arg:
+            opt, val = arg.split("=", 1)
+            self._set(opt, val)
+            return index + 1
+        canonical = self.OPTION_ALIASES.get(arg)
+        if canonical:
+            if canonical == "exclusive":
+                self._set(arg, True)
+                return index + 1
+            if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                self._set(arg, args[index + 1])
+                return index + 2
+            self.errors.append(f"Option {arg} requires a value")
+            return index + 1
+        # Unknown
+        opt_name = arg.lstrip("-").replace("-", "_")
+        self.options.extra_options[opt_name] = True
+        return index + 1
+
+    def _set(self, opt: str, val: Any):
+        canonical = self.OPTION_ALIASES.get(opt)
+        if not canonical:
+            self.options.extra_options[opt.lstrip("-").replace("-", "_")] = val
+            return
+        try:
+            if canonical in ("nodes", "ntasks", "cpus_per_task"):
+                setattr(self.options, canonical, int(val))
+            elif canonical == "time":
+                self._validate_time(val)
+                setattr(self.options, canonical, val)
+            elif canonical in ("mem", "mem_per_cpu"):
+                self._validate_mem(val)
+                setattr(self.options, canonical, val)
+            else:
+                setattr(self.options, canonical, str(val))
+        except Exception as e:
+            self.errors.append(f"Invalid value for {opt}: {e}")
+
+    def _validate_time(self, s):
+        if not (
+            re.match(r"^\d+$", s)
+            or re.match(r"^\d+-\d{1,2}:\d{2}:\d{2}$", s)
+            or re.match(r"^\d{1,2}:\d{2}:\d{2}$", s)
+        ):
+            self.errors.append(f"Invalid time: {s}")
+
+    def _validate_mem(self, s):
+        if not re.match(r"^\d+[KMGT]?$", s, re.I):
+            self.errors.append(f"Invalid memory: {s}")
+
+    def _print_help(self):
+        print("Usage: ssubmit [OPTIONS] [SLURM_OPTIONS] '<command>'")
+        print("Options: --cleanup (Auto-remove worktree)")
+
+
+# --- Main Logic ---
+
+
+def run():
+    # 1. Parse Args
+    args = sys.argv[1:]
+    auto_cleanup = "--cleanup" in args
+    if auto_cleanup:
+        args.remove("--cleanup")
+
+    parser = SbatchParser()
+    options, command_args = parser.parse(args)
     if parser.errors:
-        for error in parser.errors:
-            print(f"Error: {error}", file=sys.stderr)
+        for e in parser.errors:
+            print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    
-    sbatch_args = options.to_sbatch_args()
-else:
-    sbatch_args = []
-    command_args = []
 
-# Output: AUTO_CLEANUP, SBATCH_ARGS, SCRIPT
-print(f"{auto_cleanup}")
-print(json.dumps(sbatch_args))
-if len(command_args) == 1:
-    print(command_args[0])
-else:
-    print(shlex.join(command_args))
-PYTHON_PARSER
-)
+    command = " ".join(command_args)
+    if not command:
+        print("Error: No command provided.")
+        sys.exit(1)
 
-# Check if script/command argument is provided
-if [ -z "$SCRIPT" ]; then
-    echo "Usage: ssubmit [OPTIONS] [SLURM_OPTIONS] '<command_or_script>'"
-    echo ""
-    echo "ssubmit options:"
-    echo "  --cleanup           Automatically clean up worktree after job finishes (default: keep)"
-    echo ""
-    echo "Examples:"
-    echo "  ssubmit 'python train.py'"
-    echo "  ssubmit --cleanup -N 2 'python train.py'"
-    echo "  ssubmit --cleanup --gres=gpu:h100:1 'python train.py'"
-    echo ""
-    echo "Common SLURM options:"
-    echo "  -N NUM              Number of nodes"
-    echo "  -n NUM              Number of tasks"
-    echo "  -c NUM              CPUs per task"
-    echo "  --time=D-HH:MM:SS   Time limit"
-    echo "  --gres=TYPE:NUM     Generic resources (e.g., gpu:h100:1)"
-    echo "  -p PARTITION        Partition name"
-    exit 1
-fi
+    # Resolve SCRIPT path if it's a file
+    script_path = command_args[0] if command_args else ""
+    if os.path.isfile(script_path):
+        script_path = os.path.abspath(script_path)
+        command = shlex.join([script_path] + command_args[1:])
 
-# Convert JSON array to bash array
-eval "PARSED_SBATCH_OPTS=($(echo "$SBATCH_ARGS_JSON" | python3 -c "import sys, json; opts = json.load(sys.stdin); print(' '.join(repr(x) for x in opts))"))"
+    # 2. Git Check
+    try:
+        subprocess.check_call(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except:
+        print("Error: Not a git repository.")
+        sys.exit(1)
 
-# If script is a file, convert to absolute path
-if [ -f "$SCRIPT" ]; then
-    SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd)/$(basename "$SCRIPT")"
-    # Quote it for safe eval
-    SCRIPT="$(printf "%q" "$SCRIPT")"
-fi
+    if subprocess.check_output(["git", "status", "--porcelain"]):
+        print("Error: Dirty worktree. Please commit changes first.")
+        sys.exit(1)
 
-# Normalize AUTO_CLEANUP to boolean values used in the job
-if [ "$AUTO_CLEANUP" = "True" ]; then
-    AUTO_CLEANUP="true"
-else
-    AUTO_CLEANUP="false"
-fi
+    # 3. Setup IDs and Paths
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    git_hash = (
+        subprocess.check_output(["git", "rev-parse", "--short", "HEAD"])
+        .decode()
+        .strip()
+    )
+    full_id = f"{timestamp}_{git_hash}"
 
-if ! command -v git &> /dev/null; then
-    echo "Git could not be found. Please install Git to use this script."
-    exit 1
-fi
-# Get the absolute path of the current directory as the project root
-HOST_PROJECT_ROOT="$(pwd)"
+    project_root = os.getcwd()
+    snapshot_dir = os.path.expanduser(f"~/snapshots/{full_id}")
+    os.makedirs(snapshot_dir, exist_ok=True)
 
-if [ -n "$(git status --porcelain)" ]; then
-    echo "Dirty worktree detected. Please commit your changes first."
-    echo "   (Git Worktree requires a clean commit to snapshot HEAD)"
-    exit 1
-fi
+    # 4. Snapshoting
+    print(f"Creating snapshot: {full_id}")
+    try:
+        subprocess.check_call(
+            ["git", "worktree", "add", "--detach", "-f", snapshot_dir, "HEAD"],
+            stdout=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        print(f"Error creating worktree: {e}")
+        sys.exit(1)
 
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-GIT_HASH=$(git rev-parse --short HEAD 2>/dev/null || echo "nogit")
-FULL_ID="${TIMESTAMP}_${GIT_HASH}"
+    # Soft-links
+    for d in ["data", "checkpoints", "output", "wandb", ".venv"]:
+        src = os.path.join(project_root, d)
+        if os.path.isdir(src):
+            dst = os.path.join(snapshot_dir, d)
+            os.makedirs(dst, exist_ok=True)
+            subprocess.call(["ln", "-s", src, dst])
 
-HOST_SNAPSHOT_DIR="${HOME}/snapshots/${FULL_ID}"
-mkdir -p "$HOST_SNAPSHOT_DIR"
+    # 5. sbatch Options
+    log_file = os.path.expanduser(f"~/log/{full_id}.out")
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-# Setup cleanup trap for failed submissions
-cleanup() {
-    if [ $? -ne 0 ]; then
-        echo "Cleaning up after error..."
+    sbatch_args = [
+        "--nodes=1",
+        "--ntasks=1",
+        "--cpus-per-task=4",
+        f"--job-name={full_id}",
+        f"--output={log_file}",
+    ]
+    # Override with user args
+    sbatch_args.extend(options.to_sbatch_args())
+
+    # 6. Submit
+    script_content = f"""#!/bin/bash
+export SLURM_JOB_ID="{full_id}"
+export AUTO_CLEANUP="{"true" if auto_cleanup else "false"}"
+export HOST_SNAPSHOT_DIR="{snapshot_dir}"
+export HOST_PROJECT_ROOT="{project_root}"
+
+cleanup_worktree() {{
+    if [ "$AUTO_CLEANUP" = "true" ]; then
+        cd "$HOST_PROJECT_ROOT"
         git worktree remove -f "$HOST_SNAPSHOT_DIR" 2>/dev/null || true
         rm -rf "$HOST_SNAPSHOT_DIR"
     fi
-}
-trap cleanup EXIT
-
-echo "Creating code snapshot: $FULL_ID"
-git worktree add --detach -f "$HOST_SNAPSHOT_DIR" HEAD > /dev/null
-
-echo "Soft-linking data directories..."
-DIRECTORIES=("data" "checkpoints" "output" "wandb" ".venv")
-for DIR in "${DIRECTORIES[@]}"; do
-    if [ -d "${HOST_PROJECT_ROOT}/${DIR}" ]; then
-        mkdir -p "${HOST_SNAPSHOT_DIR}/${DIR}"
-        ln -s "${HOST_PROJECT_ROOT}/${DIR}" "${HOST_SNAPSHOT_DIR}/${DIR}"
-    fi
-done
-
-echo "Submitting job to SLURM..."
-mkdir -p "${HOME}/log"
-
-# Build sbatch command with default parameters and user-provided options
-# Merge default options with parsed user options
-SBATCH_OPTS=(
-    "--nodes=1"
-    "--ntasks=1"
-    "--time=0-05:00:00"
-    "--job-name=${FULL_ID}"
-    "--output=${HOME}/log/${FULL_ID}.out"
-)
-
-# Append parsed user options (will override defaults)
-SBATCH_OPTS+=("${PARSED_SBATCH_OPTS[@]}")
-
-sbatch "${SBATCH_OPTS[@]}" << EOF
-#!/bin/bash
-
-export SLURM_JOB_ID="${FULL_ID}"
-export AUTO_CLEANUP="${AUTO_CLEANUP}"
-export HOST_SNAPSHOT_DIR="${HOST_SNAPSHOT_DIR}"
-export HOST_PROJECT_ROOT="${HOST_PROJECT_ROOT}"
-
-echo "   Job ID: \$SLURM_JOB_ID"
-echo "   Job started on node: \$(hostname)"
-echo "   Running script: $(basename "$SCRIPT")"
-echo "   Snapshot Context: \$HOST_SNAPSHOT_DIR"
-
-# Cleanup callback
-cleanup_worktree() {
-    if [ "\$AUTO_CLEANUP" = "true" ]; then
-        echo "   Cleaning up worktree: \$HOST_SNAPSHOT_DIR"
-        # Exit worktree and return to project root before removing
-        cd "\$HOST_PROJECT_ROOT"
-        git worktree remove -f "\$HOST_SNAPSHOT_DIR" 2>/dev/null || true
-        rm -rf "\$HOST_SNAPSHOT_DIR"
-        echo "   Cleanup completed"
-    else
-        echo "   Worktree snapshot kept at: \$HOST_SNAPSHOT_DIR"
-        echo "   To manually clean up: cd \$HOST_PROJECT_ROOT && git worktree remove -f \$HOST_SNAPSHOT_DIR && rm -rf \$HOST_SNAPSHOT_DIR"
-    fi
-}
-
-# Register cleanup callback on exit
+}}
 trap cleanup_worktree EXIT
 
-cd "$HOST_SNAPSHOT_DIR"
-eval "$SCRIPT"
+cd "{snapshot_dir}"
+eval "{command}"
+"""
+    try:
+        proc = subprocess.Popen(["sbatch"] + sbatch_args, stdin=subprocess.PIPE)
+        proc.communicate(input=script_content.encode())
+        if proc.returncode != 0:
+            raise subprocess.CalledProcessError(proc.returncode, "sbatch")
+        print(f"Job submitted! Log: {log_file}")
+    except Exception as e:
+        print(f"Error: sbatch submission failed: {e}", file=sys.stderr)
+        # Cleanup worktree on submission failure
+        subprocess.call(
+            ["git", "worktree", "remove", "-f", snapshot_dir],
+            cwd=project_root,
+            stderr=subprocess.DEVNULL,
+        )
+        if os.path.exists(snapshot_dir):
+            subprocess.call(["rm", "-rf", snapshot_dir])
+        sys.exit(1)
 
-EOF
 
-echo "Job submitted! Log will be saved to ${HOME}/log/${FULL_ID}.out"
+if __name__ == "__main__":
+    run()
