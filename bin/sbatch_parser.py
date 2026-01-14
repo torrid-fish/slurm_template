@@ -67,33 +67,30 @@ class SbatchOptions:
         args = []
         
         mapping = {
-            "nodes": ("-N", None),
-            "ntasks": ("-n", None),
-            "cpus_per_task": ("-c", None),
-            "gres": ("--gres", None),
-            "time": ("--time", None),
-            "partition": ("-p", None),
-            "job_name": ("-J", None),
-            "output": ("-o", None),
-            "error": ("-e", None),
-            "mem": ("--mem", None),
-            "mem_per_cpu": ("--mem-per-cpu", None),
-            "mail_type": ("--mail-type", None),
-            "mail_user": ("--mail-user", None),
-            "dependency": ("--dependency", None),
-            "array": ("--array", None),
+            "nodes": ("--nodes", "="),
+            "ntasks": ("--ntasks", "="),
+            "cpus_per_task": ("--cpus-per-task", "="),
+            "gres": ("--gres", "="),
+            "time": ("--time", "="),
+            "partition": ("--partition", "="),
+            "job_name": ("--job-name", "="),
+            "output": ("--output", "="),
+            "error": ("--error", "="),
+            "mem": ("--mem", "="),
+            "mem_per_cpu": ("--mem-per-cpu", "="),
+            "mail_type": ("--mail-type", "="),
+            "mail_user": ("--mail-user", "="),
+            "dependency": ("--dependency", "="),
+            "array": ("--array", "="),
             "exclusive": ("--exclusive", "="),
-            "constraint": ("--constraint", None),
-            "account": ("-A", None),
+            "constraint": ("--constraint", "="),
+            "account": ("--account", "="),
         }
         
         for attr, (flag, sep) in mapping.items():
             value = getattr(self, attr)
             if value is not None:
-                if sep is None:
-                    args.append(f"{flag}={value}")
-                else:
-                    args.append(f"{flag}{sep}{value}")
+                args.append(f"{flag}{sep}{value}")
         
         # Add extra options
         for key, value in self.extra_options.items():

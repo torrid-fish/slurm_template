@@ -142,14 +142,11 @@ mkdir -p "${HOME}/log"
 # Build sbatch command with default parameters and user-provided options
 # Merge default options with parsed user options
 SBATCH_OPTS=(
-    "-N=1"
-    "-n=1"
-    "-c=4"
-    "-p=p01"
-    "--time=0-30:00:00"
-    "--gres=gpu:h100:1"
+    "--nodes=1"
+    "--ntasks=1"
+    "--time=0-05:00:00"
     "--job-name=${FULL_ID}"
-    "-o=${HOME}/log/${FULL_ID}.out"
+    "--output=${HOME}/log/${FULL_ID}.out"
 )
 
 # Append parsed user options (will override defaults)
