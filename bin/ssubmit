@@ -105,37 +105,71 @@ class SbatchParser:
         self.errors = []
 
     def parse(self, args: List[str]) -> Tuple[SbatchOptions, List[str]]:
+        """
+        Parse sbatch options from command line arguments.
+
+        Args:
+            args: Command line arguments (typically sys.argv[1:])
+
+        Returns:
+            Tuple of (SbatchOptions, remaining_args)
+        """
         i = 0
+
         while i < len(args):
             arg = args[i]
-            if not arg.startswith("-"):
+            s_arg = arg.strip()
+
+            # Skip empty arguments or literal backslashes often left by bad copy-pasting
+            if not s_arg or s_arg == "\\":
+                i += 1
+                continue
+
+            # If it's a non-option argument, everything from here on is the command
+            if not s_arg.startswith("-"):
+                # We return the original args list from this point to preserve spacing in command
                 return self.options, args[i:]
-            if arg == "--":
+
+            # Handle -- to stop parsing (standard convention)
+            if s_arg == "--":
                 return self.options, args[i + 1 :]
-            if arg in ("-h", "--help"):
+
+            # Handle -h or --help
+            if s_arg in ("-h", "--help"):
                 self._print_help()
                 sys.exit(0)
+
+            # Parse option
             i = self._parse_one(arg, args, i)
+
         return self.options, []
 
     def _parse_one(self, arg: str, args: List[str], index: int) -> int:
+        arg = arg.strip()
         if "=" in arg:
-            opt, val = arg.split("=", 1)
-            self._set(opt, val)
+            option, value = arg.split("=", 1)
+            self._set(option, value)
             return index + 1
+
         canonical = self.OPTION_ALIASES.get(arg)
         if canonical:
+            # Check if this option takes a value
             if canonical == "exclusive":
                 self._set(arg, True)
                 return index + 1
-            if index + 1 < len(args) and not args[index + 1].startswith("-"):
-                self._set(arg, args[index + 1])
-                return index + 2
+
+            if index + 1 < len(args):
+                next_arg = args[index + 1].strip()
+                if not next_arg.startswith("-") and next_arg != "\\":
+                    self._set(arg, next_arg)
+                    return index + 2
+
             self.errors.append(f"Option {arg} requires a value")
             return index + 1
-        # Unknown
-        opt_name = arg.lstrip("-").replace("-", "_")
-        self.options.extra_options[opt_name] = True
+
+        # Unknown option - store as extra
+        option_name = arg.lstrip("-").replace("-", "_")
+        self.options.extra_options[option_name] = True
         return index + 1
 
     def _set(self, opt: str, val: Any):
@@ -197,10 +231,14 @@ def run():
         sys.exit(1)
 
     # Resolve SCRIPT path if it's a file
-    script_path = command_args[0] if command_args else ""
-    if os.path.isfile(script_path):
+    script_path = command_args[0].strip() if command_args else ""
+    if script_path and os.path.isfile(script_path):
         script_path = os.path.abspath(script_path)
-        command = shlex.join([script_path] + command_args[1:])
+        # Reconstruct command with stripped arguments to handle weird whitespace
+        command = shlex.join([script_path] + [a.strip() for a in command_args[1:]])
+    else:
+        # If it's a general command string, use shlex.join on all args to be safe
+        command = shlex.join([a.strip() for a in command_args])
 
     # 2. Git Check
     try:
