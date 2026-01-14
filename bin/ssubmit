@@ -357,7 +357,7 @@ def run():
 
     # 6. Submit
     script_content = f"""#!/bin/bash
-export SLURM_JOB_ID="{full_id}"
+export FULL_ID="{full_id}"
 export AUTO_CLEANUP="{"true" if auto_cleanup else "false"}"
 export HOST_SNAPSHOT_DIR="{snapshot_dir}"
 export HOST_PROJECT_ROOT="{project_root}"
