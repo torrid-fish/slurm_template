@@ -284,7 +284,6 @@ def run():
         src = os.path.join(project_root, d)
         if os.path.isdir(src):
             dst = os.path.join(snapshot_dir, d)
-            os.makedirs(dst, exist_ok=True)
             subprocess.call(["ln", "-s", src, dst])
 
     # 5. sbatch Options
