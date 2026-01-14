@@ -253,18 +253,27 @@ def run():
     log_file = os.path.expanduser(f"~/log/{full_id}.out")
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    sbatch_args = [
-        "--nodes=1",
-        "--ntasks=1",
-        "--cpus-per-task=4",
-        "--partition=p01",
-        "--time=0-05:00:00",
-        "--gres=gpu:h100:1",
-        f"--job-name={full_id}",
-        f"--output={log_file}",
-    ]
-    # Override with user args
-    sbatch_args.extend(options.to_sbatch_args())
+    # Initialize options with defaults
+    final_options = SbatchOptions(
+        nodes=1,
+        ntasks=1,
+        cpus_per_task=4,
+        partition="p01",
+        time="0-05:00:00",
+        gres="gpu:h100:1",
+        job_name=full_id,
+        output=log_file,
+    )
+
+    # Merge user-provided options (non-None values override defaults)
+    user_data = asdict(options)
+    for key, val in user_data.items():
+        if key != "extra_options" and val is not None:
+            setattr(final_options, key, val)
+        elif key == "extra_options":
+            final_options.extra_options.update(val)
+
+    sbatch_args = final_options.to_sbatch_args()
 
     # --- Debug: Print SLURM Settings ---
     print("-" * 60)
