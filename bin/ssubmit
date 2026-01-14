@@ -1,26 +1,59 @@
 #!/bin/bash
 # Usage: ssubmit [OPTIONS] [SLURM_OPTIONS] '<command_or_script>'
 
-# Parse arguments: OPTIONS, SLURM options (start with -), then command
-SLURM_OPTS=()
-SCRIPT=""
-AUTO_CLEANUP=false
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+export SCRIPT_DIR
 
-while [[ $# -gt 0 ]]; do
-    # Check for ssubmit-specific options
-    if [[ "$1" == "--cleanup" ]]; then
-        AUTO_CLEANUP=true
-        shift
-    # Check if this is a SLURM option (starts with - and isn't just a dash)
-    elif [[ "$1" == -* && "$1" != "-" ]]; then
-        SLURM_OPTS+=("$1")
-        shift
-    else
-        # Everything else is the script/command
-        SCRIPT="$@"
-        break
-    fi
-done
+# Parse arguments using Python parser
+{
+    read -r AUTO_CLEANUP
+    read -r SBATCH_ARGS_JSON
+    read -r SCRIPT
+} < <(python3 - "$@" << 'PYTHON_PARSER'
+import sys
+import json
+import os
+import shlex
+sys.path.insert(0, os.environ.get('SCRIPT_DIR', ''))
+from sbatch_parser import SbatchParser
+
+# Parse command line arguments
+parser = SbatchParser()
+
+# Separate ssubmit-specific options from SLURM options
+remaining_args = []
+auto_cleanup = False
+
+for arg in sys.argv[1:]:
+    if arg == "--cleanup":
+        auto_cleanup = True
+    else:
+        remaining_args.append(arg)
+
+# Now parse SLURM options from remaining args
+if remaining_args:
+    options, command_args = parser.parse(remaining_args)
+    
+    if parser.errors:
+        for error in parser.errors:
+            print(f"Error: {error}", file=sys.stderr)
+        sys.exit(1)
+    
+    sbatch_args = options.to_sbatch_args()
+else:
+    sbatch_args = []
+    command_args = []
+
+# Output: AUTO_CLEANUP, SBATCH_ARGS, SCRIPT
+print(f"{auto_cleanup}")
+print(json.dumps(sbatch_args))
+if len(command_args) == 1:
+    print(command_args[0])
+else:
+    print(shlex.join(command_args))
+PYTHON_PARSER
+)
 
 # Check if script/command argument is provided
 if [ -z "$SCRIPT" ]; then
@@ -44,9 +77,21 @@ if [ -z "$SCRIPT" ]; then
     exit 1
 fi
 
+# Convert JSON array to bash array
+eval "PARSED_SBATCH_OPTS=($(echo "$SBATCH_ARGS_JSON" | python3 -c "import sys, json; opts = json.load(sys.stdin); print(' '.join(repr(x) for x in opts))"))"
+
 # If script is a file, convert to absolute path
 if [ -f "$SCRIPT" ]; then
     SCRIPT="$(cd "$(dirname "$SCRIPT")" && pwd)/$(basename "$SCRIPT")"
+    # Quote it for safe eval
+    SCRIPT="$(printf "%q" "$SCRIPT")"
+fi
+
+# Normalize AUTO_CLEANUP to boolean values used in the job
+if [ "$AUTO_CLEANUP" = "True" ]; then
+    AUTO_CLEANUP="true"
+else
+    AUTO_CLEANUP="false"
 fi
 
 if ! command -v git &> /dev/null; then
@@ -95,17 +140,20 @@ echo "Submitting job to SLURM..."
 mkdir -p "${HOME}/log"
 
 # Build sbatch command with default parameters and user-provided options
+# Merge default options with parsed user options
 SBATCH_OPTS=(
-    "-N 1"
-    "-n 1"
-    "-c 4"
-    "-p p01"
+    "-N=1"
+    "-n=1"
+    "-c=4"
+    "-p=p01"
     "--time=0-30:00:00"
     "--gres=gpu:h100:1"
     "--job-name=${FULL_ID}"
-    "-o ${HOME}/log/${FULL_ID}.out"
-    "$@"  # Append user-provided options (will override defaults)
+    "-o=${HOME}/log/${FULL_ID}.out"
 )
+
+# Append parsed user options (will override defaults)
+SBATCH_OPTS+=("${PARSED_SBATCH_OPTS[@]}")
 
 sbatch "${SBATCH_OPTS[@]}" << EOF
 #!/bin/bash
@@ -139,7 +187,7 @@ cleanup_worktree() {
 trap cleanup_worktree EXIT
 
 cd "$HOST_SNAPSHOT_DIR"
-"$SCRIPT"
+eval "$SCRIPT"
 
 EOF
 
