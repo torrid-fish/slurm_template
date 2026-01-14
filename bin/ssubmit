@@ -14,91 +14,130 @@ from typing import Dict, List, Optional, Any, Tuple
 
 @dataclass
 class SbatchOptions:
-    """Parsed SLURM sbatch options."""
+    """Parsed SLURM sbatch options based on official documentation."""
+    # Resource Allocation
+    nodes: Optional[int] = None           # -N, --nodes
+    ntasks: Optional[int] = None          # -n, --ntasks
+    cpus_per_task: Optional[int] = None   # -c, --cpus-per-task
+    partition: Optional[str] = None       # -p, --partition
+    time: Optional[str] = None            # -t, --time
+    gres: Optional[str] = None            # --gres
 
-    nodes: Optional[int] = None
-    ntasks: Optional[int] = None
-    cpus_per_task: Optional[int] = None
-    gres: Optional[str] = None
-    time: Optional[str] = None
-    partition: Optional[str] = None
-    job_name: Optional[str] = None
-    output: Optional[str] = None
-    error: Optional[str] = None
-    mem: Optional[str] = None
-    mem_per_cpu: Optional[str] = None
-    mail_type: Optional[str] = None
-    mail_user: Optional[str] = None
-    dependency: Optional[str] = None
-    array: Optional[str] = None
-    exclusive: Optional[str] = None
-    constraint: Optional[str] = None
-    account: Optional[str] = None
+    # GPU Specific
+    gpus: Optional[str] = None            # -G, --gpus
+    gpus_per_node: Optional[str] = None   # --gpus-per-node
+    gpus_per_task: Optional[str] = None   # --gpus-per-task
+    mem_per_gpu: Optional[str] = None     # --mem-per-gpu
+
+    # Memory
+    mem: Optional[str] = None             # --mem
+    mem_per_cpu: Optional[str] = None     # --mem-per-cpu
+
+    # Job Naming & Output
+    job_name: Optional[str] = None        # -J, --job-name
+    output: Optional[str] = None          # -o, --output
+    error: Optional[str] = None           # -e, --error
+    chdir: Optional[str] = None           # -D, --chdir
+
+    # Scheduling & Priority
+    account: Optional[str] = None         # -A, --account
+    begin: Optional[str] = None           # -b, --begin
+    constraint: Optional[str] = None      # -C, --constraint
+    dependency: Optional[str] = None      # -d, --dependency
+    hold: Optional[bool] = None           # -H, --hold
+    priority: Optional[str] = None        # --priority
+    qos: Optional[str] = None             # -q, --qos
+    reservation: Optional[str] = None     # --reservation
+
+    # Node Selection
+    nodelist: Optional[str] = None        # -w, --nodelist
+    exclude: Optional[str] = None         # -x, --exclude
+    ntasks_per_node: Optional[int] = None # --ntasks-per-node
+
+    # Notifications
+    mail_type: Optional[str] = None       # --mail-type
+    mail_user: Optional[str] = None       # --mail-user
+
+    # Advanced / Flags
+    exclusive: Optional[bool] = None      # --exclusive
+    overcommit: Optional[bool] = None     # -O, --overcommit
+    oversubscribe: Optional[bool] = None  # -s, --oversubscribe
+    array: Optional[str] = None           # -a, --array
+    export: Optional[str] = None          # --export
+
     extra_options: Dict[str, Any] = field(default_factory=dict)
 
     def to_sbatch_args(self) -> List[str]:
-        mapping = {
-            "nodes": ("--nodes", "="),
-            "ntasks": ("--ntasks", "="),
-            "cpus_per_task": ("--cpus-per-task", "="),
-            "gres": ("--gres", "="),
-            "time": ("--time", "="),
-            "partition": ("--partition", "="),
-            "job_name": ("--job-name", "="),
-            "output": ("--output", "="),
-            "error": ("--error", "="),
-            "mem": ("--mem", "="),
-            "mem_per_cpu": ("--mem-per-cpu", "="),
-            "mail_type": ("--mail-type", "="),
-            "mail_user": ("--mail-user", "="),
-            "dependency": ("--dependency", "="),
-            "array": ("--array", "="),
-            "exclusive": ("--exclusive", "="),
-            "constraint": ("--constraint", "="),
-            "account": ("--account", "="),
+        # Mapping for options that take values
+        val_mapping = {
+            "nodes": "--nodes", "ntasks": "--ntasks", "cpus_per_task": "--cpus-per-task",
+            "partition": "--partition", "time": "--time", "gres": "--gres",
+            "gpus": "--gpus", "gpus_per_node": "--gpus-per-node", "gpus_per_task": "--gpus-per-task",
+            "mem_per_gpu": "--mem-per-gpu", "mem": "--mem", "mem_per_cpu": "--mem-per-cpu",
+            "job_name": "--job-name", "output": "--output", "error": "--error",
+            "chdir": "--chdir", "account": "--account", "begin": "--begin",
+            "constraint": "--constraint", "dependency": "--dependency",
+            "priority": "--priority", "qos": "--qos", "reservation": "--reservation",
+            "nodelist": "--nodelist", "exclude": "--exclude", "ntasks_per_node": "--ntasks-per-node",
+            "mail_type": "--mail-type", "mail_user": "--mail-user", "array": "--array", "export": "--export"
         }
+        # Flags that don't take values
+        flags = {"exclusive": "--exclusive", "hold": "--hold", "overcommit": "--overcommit", "oversubscribe": "--oversubscribe"}
+
         args = []
-        for attr, (flag, sep) in mapping.items():
+        for attr, flag in val_mapping.items():
             val = getattr(self, attr)
             if val is not None:
-                args.append(f"{flag}{sep}{val}")
+                args.append(f"{flag}={val}")
+
+        for attr, flag in flags.items():
+            if getattr(self, attr) is True:
+                args.append(flag)
+
         for key, val in self.extra_options.items():
             if val is True:
-                args.append(f"--{key}")
+                args.append(f"--{key.replace('_', '-')}")
             elif val is not False:
-                args.append(f"--{key}={val}")
+                args.append(f"--{key.replace('_', '-')}={val}")
         return args
 
 
 class SbatchParser:
     OPTION_ALIASES = {
-        "-N": "nodes",
-        "--nodes": "nodes",
-        "-n": "ntasks",
-        "--ntasks": "ntasks",
-        "-c": "cpus_per_task",
-        "--cpus-per-task": "cpus_per_task",
+        "-N": "nodes", "--nodes": "nodes",
+        "-n": "ntasks", "--ntasks": "ntasks",
+        "-c": "cpus_per_task", "--cpus-per-task": "cpus_per_task",
+        "-p": "partition", "--partition": "partition",
+        "-t": "time", "--time": "time",
         "--gres": "gres",
-        "--time": "time",
-        "-p": "partition",
-        "--partition": "partition",
-        "-J": "job_name",
-        "--job-name": "job_name",
-        "-o": "output",
-        "--output": "output",
-        "-e": "error",
-        "--error": "error",
-        "--mem": "mem",
-        "--mem-per-cpu": "mem_per_cpu",
-        "--mail-type": "mail_type",
-        "--mail-user": "mail_user",
-        "--dependency": "dependency",
-        "--array": "array",
+        "-G": "gpus", "--gpus": "gpus",
+        "--gpus-per-node": "gpus_per_node", "--gpus-per-task": "gpus_per_task",
+        "--mem-per-gpu": "mem_per_gpu",
+        "--mem": "mem", "--mem-per-cpu": "mem_per_cpu",
+        "-J": "job_name", "--job-name": "job_name",
+        "-o": "output", "--output": "output",
+        "-e": "error", "--error": "error",
+        "-D": "chdir", "--chdir": "chdir",
+        "-A": "account", "--account": "account",
+        "-b": "begin", "--begin": "begin",
+        "-C": "constraint", "--constraint": "constraint",
+        "-d": "dependency", "--dependency": "dependency",
+        "-H": "hold", "--hold": "hold",
+        "--priority": "priority",
+        "-q": "qos", "--qos": "qos",
+        "--reservation": "reservation",
+        "-w": "nodelist", "--nodelist": "nodelist",
+        "-x": "exclude", "--exclude": "exclude",
+        "--ntasks-per-node": "ntasks_per_node",
+        "--mail-type": "mail_type", "--mail-user": "mail_user",
         "--exclusive": "exclusive",
-        "--constraint": "constraint",
-        "-A": "account",
-        "--account": "account",
+        "-O": "overcommit", "--overcommit": "overcommit",
+        "-s": "oversubscribe", "--oversubscribe": "oversubscribe",
+        "-a": "array", "--array": "array",
+        "--export": "export"
     }
+
+    FLAG_OPTIONS = {"hold", "exclusive", "overcommit", "oversubscribe"}
 
     def __init__(self):
         self.options = SbatchOptions()
@@ -154,7 +193,7 @@ class SbatchParser:
         canonical = self.OPTION_ALIASES.get(arg)
         if canonical:
             # Check if this option takes a value
-            if canonical == "exclusive":
+            if canonical in self.FLAG_OPTIONS:
                 self._set(arg, True)
                 return index + 1
 
@@ -178,7 +217,7 @@ class SbatchParser:
             self.options.extra_options[opt.lstrip("-").replace("-", "_")] = val
             return
         try:
-            if canonical in ("nodes", "ntasks", "cpus_per_task"):
+            if canonical in ("nodes", "ntasks", "cpus_per_task", "ntasks_per_node"):
                 setattr(self.options, canonical, int(val))
             elif canonical == "time":
                 self._validate_time(val)
@@ -187,7 +226,7 @@ class SbatchParser:
                 self._validate_mem(val)
                 setattr(self.options, canonical, val)
             else:
-                setattr(self.options, canonical, str(val))
+                setattr(self.options, canonical, val)
         except Exception as e:
             self.errors.append(f"Invalid value for {opt}: {e}")
 

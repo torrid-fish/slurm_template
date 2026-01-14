@@ -12,7 +12,7 @@ export PATH="~/.slurm_template/bin:$PATH"
 
 ## Tools
 
-### `ssubmit` - Enhanced SLURM Job Submission
+### `ssubmit`: Enhanced SLURM Job Submission
 
 **Features:**
 - Code version isolation: Creates automatic code snapshots (git worktree) for each job submission
@@ -22,46 +22,33 @@ export PATH="~/.slurm_template/bin:$PATH"
 - Unified log management: Automatically manages log directories
 
 **Usage:**
+Use as a drop-in replacement for `sbatch`:
 
 ```bash
-# Simple submission
-ssubmit 'python train.py'
-
-# Specify GPU
-ssubmit --gres=gpu:h100:1 'python train.py'
-
-# Multiple SLURM parameters
-ssubmit -N 2 -n 4 --time=2-00:00:00 --gres=gpu:a100:2 'python train.py --batch_size=256'
-
-# With virtual environment
-ssubmit 'source .venv/bin/activate && python train.py'
-
-# Complex commands
-ssubmit 'bash -c "source .venv/bin/activate && python train.py --config config.yaml"'
+ssubmit -N 1 -n 1 -p mi3001x \
+    --time=05:00:00 \
+    bash src/run_truthfulqa.sh
 ```
 
-**Common SLURM Options:**
+**Directory Structure**: The whole project is organized as follows:
 
-| Option | Description | Example |
-|--------|-------------|---------|
-| `-N` | Number of nodes | `-N 2` |
-| `-n` | Number of tasks | `-n 4` |
-| `-c` | CPU cores per task | `-c 8` |
-| `-p` | Partition name | `-p gpu_partition` |
-| `--time` | Time limit | `--time=2-00:00:00` (2 days) |
-| `--gres` | Generic resources (GPUs etc.) | `--gres=gpu:h100:2` |
-
-## Directory Structure
-
-Required directories (automatically created if missing):
-
+```text
+.
+├── project_root/
+│   ├── .git/          # Git data
+│   ├── .venv/         # Virtual environment
+│   ├── data/          # Large datasets
+│   ├── checkpoints/   # Model checkpoints
+│   ├── wandb/         # Weights & Biases files
+│   ├── output/        # Output files
+│   └── src/           # Source code
+├── snapshots/         # Auto-generated code snapshots
+│   └── <job_id>/      # Individual job snapshots
+│       └── ...        # Snapshot contents
+└── logs/              # Centralized log storage
+    └── <job_id>.out   # Job output logs
 ```
-project-root/
-├── data/                 # Datasets (shared via symlink)
-├── checkpoints/          # Model checkpoints (shared via symlink)
-├── output/              # Results (shared via symlink)
-├── wandb/               # Weights & Biases logs (shared via symlink)
-├── .venv/               # Python virtual environment (shared via symlink)
-├── train.py
-└── ...
-```
+
+### `jstat`: Job status monitoring
+ 
+A wrapper of `sacct` for easier job status checking.
